@@ -255,9 +255,9 @@ function BlogBodyEditor({
 // ── X post character count ─────────────────────────────────────────────────
 
 function XCharCount({ body, format }: { body: string; format?: string }) {
-  const isThread = format?.toUpperCase() === "THREAD";
+  const fmt = format?.toUpperCase() ?? "";
 
-  if (isThread) {
+  if (fmt === "THREAD") {
     const posts = body
       .split(/\n+---\n+/)
       .map((s) => s.trim())
@@ -279,6 +279,16 @@ function XCharCount({ body, format }: { body: string; format?: string }) {
   }
 
   const n = body.length;
+
+  if (fmt === "LONG-FORM SINGLE POST") {
+    return (
+      <p className="text-xs mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 text-gray-400 dark:text-gray-500">
+        {n.toLocaleString()} characters · long-form
+      </p>
+    );
+  }
+
+  // SHORT SINGLE POST (or unrecognised format)
   const over = n > 280;
   return (
     <p className={`text-xs mt-3 pt-3 border-t border-gray-100 dark:border-gray-800
@@ -468,6 +478,13 @@ export default function Home() {
         xPost: data.xPost,
         blogPost: data.blogPost,
       };
+      // Diagnostic — remove once blog body issue is confirmed resolved
+      console.log("[voicepost] blogPost:", {
+        title: newResult.blogPost.title,
+        format: newResult.blogPost.format,
+        bodyLength: newResult.blogPost.body.length,
+        bodyPreview: newResult.blogPost.body.slice(0, 120),
+      });
       setResult(newResult);
       setXPostBody(newResult.xPost.body);
       setBlogBody(newResult.blogPost.body);

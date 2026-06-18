@@ -15,17 +15,35 @@ export function parseOutput(raw: string): ParsedOutput {
     if (lines[i].trim() === "---") delimIdx.push(i);
   }
 
-  // Without at least two delimiters — likely a "weak transcript" response with
-  // only TITLE:/FORMAT: NONE + REASONING: and no post body.
+  // Without at least two delimiters — either a "weak transcript" response
+  // (FORMAT:/TITLE: NONE + REASONING:, no body) or the model emitted an opening
+  // "---" but forgot the closing one. Handle both cases.
   if (delimIdx.length < 2) {
-    const result: ParsedOutput = { body: "", sources: [] };
-    for (const line of lines) {
-      const t = line.trim();
-      if (t.startsWith("FORMAT:")) result.format = t.slice("FORMAT:".length).trim();
-      else if (t.startsWith("TITLE:")) result.title = t.slice("TITLE:".length).trim();
-      else if (t.startsWith("REASONING:")) result.reasoning = t.slice("REASONING:".length).trim();
+    if (delimIdx.length === 0) {
+      // Weak-transcript: only metadata, no body content.
+      const result: ParsedOutput = { body: "", sources: [] };
+      for (const line of lines) {
+        const t = line.trim();
+        if (t.startsWith("FORMAT:")) result.format = t.slice("FORMAT:".length).trim();
+        else if (t.startsWith("TITLE:")) result.title = t.slice("TITLE:".length).trim();
+        else if (t.startsWith("REASONING:")) result.reasoning = t.slice("REASONING:".length).trim();
+      }
+      return result;
     }
-    return result;
+
+    // Exactly one delimiter: opening "---" present but closing one missing.
+    // Recover by treating everything after the lone delimiter as the body.
+    const soloIdx = delimIdx[0];
+    let format: string | undefined;
+    let title: string | undefined;
+    let reasoning: string | undefined;
+    for (const line of lines.slice(0, soloIdx)) {
+      const t = line.trim();
+      if (t.startsWith("FORMAT:")) format = t.slice("FORMAT:".length).trim();
+      else if (t.startsWith("TITLE:")) title = t.slice("TITLE:".length).trim();
+      else if (t.startsWith("REASONING:")) reasoning = t.slice("REASONING:".length).trim();
+    }
+    return { format, title, reasoning, body: lines.slice(soloIdx + 1).join("\n").trim(), sources: [] };
   }
 
   const openIdx = delimIdx[0];
