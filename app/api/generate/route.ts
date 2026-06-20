@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { composePrompt, Mode } from "@/lib/prompts/compose";
 import { callClaude, AnthropicError } from "@/lib/anthropic";
 import { parseOutput } from "@/lib/parse-output";
+import { reviewCoherence } from "@/lib/coherence-review";
 
 const VALID_MODES = new Set<Mode>(["voice-first", "balanced", "reach-first"]);
 const MIN_TRANSCRIPT_LENGTH = 50;
@@ -40,9 +41,24 @@ export async function POST(req: NextRequest) {
     const xRaw = await callClaude(composePrompt("x", validMode), transcript);
     const blogRaw = await callClaude(composePrompt("blog", validMode), transcript);
 
+    const xPost = parseOutput(xRaw);
+    const blogPost = parseOutput(blogRaw);
+
+    const [xReviewResult, blogReviewResult] = await Promise.allSettled([
+      reviewCoherence(transcript, xPost.body, "x"),
+      reviewCoherence(transcript, blogPost.body, "blog"),
+    ]);
+
+    const xReview =
+      xReviewResult.status === "fulfilled" ? xReviewResult.value : { drifted: false as const };
+    const blogReview =
+      blogReviewResult.status === "fulfilled"
+        ? blogReviewResult.value
+        : { drifted: false as const };
+
     return NextResponse.json({
-      xPost: parseOutput(xRaw),
-      blogPost: parseOutput(blogRaw),
+      xPost: { ...xPost, review: xReview },
+      blogPost: { ...blogPost, review: blogReview },
     });
   } catch (err) {
     if (err instanceof AnthropicError) {

@@ -6,10 +6,16 @@ import type { ParsedOutput } from "@/lib/parse-output";
 type Mode = "voice-first" | "balanced" | "reach-first";
 type LoadingState = "idle" | "transcribing" | "generating";
 
+interface CoherenceReview {
+  drifted: boolean;
+  revisedBody?: string;
+  reason?: string;
+}
+
 interface GenerateResult {
   transcript: string;
-  xPost: ParsedOutput;
-  blogPost: ParsedOutput;
+  xPost: ParsedOutput & { review: CoherenceReview };
+  blogPost: ParsedOutput & { review: CoherenceReview };
 }
 
 const MODES: { value: Mode; label: string; sub: string }[] = [
@@ -308,6 +314,9 @@ function PostCard({
   isEdited,
   copyText,
   isXPost,
+  review,
+  driftPicked,
+  onPickVersion,
 }: {
   label: string;
   post: ParsedOutput;
@@ -316,9 +325,13 @@ function PostCard({
   isEdited: boolean;
   copyText: string;
   isXPost?: boolean;
+  review?: CoherenceReview;
+  driftPicked: boolean;
+  onPickVersion: (body: string) => void;
 }) {
   const weak = isNone(post.format) && isNone(post.title);
   const badge = formatBadge(post.format);
+  const showDrift = !!(review?.drifted && review.revisedBody && !driftPicked);
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
@@ -345,7 +358,7 @@ function PostCard({
             </span>
           )}
         </div>
-        {!weak && <CopyButton text={copyText} />}
+        {!weak && !showDrift && <CopyButton text={copyText} />}
       </div>
 
       {/* Card body */}
@@ -368,6 +381,57 @@ function PostCard({
             px-4 py-3 text-sm text-amber-700 dark:text-amber-400 leading-relaxed">
             <span className="font-medium">Transcript too weak —</span>{" "}
             {post.reasoning ?? "record more before trying this one."}
+          </div>
+        ) : showDrift ? (
+          <div className="space-y-4">
+            <div className="rounded-lg bg-amber-50 dark:bg-amber-950/40
+              border border-amber-200 dark:border-amber-900
+              px-3 py-2 text-sm text-amber-700 dark:text-amber-400 leading-relaxed">
+              <span className="font-medium">Drift detected:</span>{" "}
+              {review!.reason ?? "The opening and ending land on different points."}
+            </div>
+
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2
+                bg-gray-50 dark:bg-gray-800/60
+                border-b border-gray-100 dark:border-gray-700">
+                <span className="text-xs font-semibold uppercase tracking-widest
+                  text-gray-400 dark:text-gray-500">
+                  Original
+                </span>
+                <button
+                  onClick={() => onPickVersion(bodyValue)}
+                  className="text-xs px-2.5 py-1 rounded-md font-medium
+                    bg-gray-900 text-white dark:bg-white dark:text-gray-900
+                    hover:bg-gray-700 dark:hover:bg-gray-200 transition-colors">
+                  Use this
+                </button>
+              </div>
+              <div className="px-3 py-3">
+                <BodyText text={bodyValue} />
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2
+                bg-gray-50 dark:bg-gray-800/60
+                border-b border-gray-100 dark:border-gray-700">
+                <span className="text-xs font-semibold uppercase tracking-widest
+                  text-gray-400 dark:text-gray-500">
+                  Tightened
+                </span>
+                <button
+                  onClick={() => onPickVersion(review!.revisedBody!)}
+                  className="text-xs px-2.5 py-1 rounded-md font-medium
+                    bg-gray-900 text-white dark:bg-white dark:text-gray-900
+                    hover:bg-gray-700 dark:hover:bg-gray-200 transition-colors">
+                  Use this
+                </button>
+              </div>
+              <div className="px-3 py-3">
+                <BodyText text={review!.revisedBody!} />
+              </div>
+            </div>
           </div>
         ) : isXPost ? (
           <>
@@ -412,11 +476,17 @@ export default function Home() {
   // Live-editable body text for each output
   const [xPostBody, setXPostBody] = useState("");
   const [blogBody, setBlogBody] = useState("");
+  // Baseline for edit detection — updated when a drift version is picked
+  const [xStartBody, setXStartBody] = useState("");
+  const [blogStartBody, setBlogStartBody] = useState("");
+  // Whether the drift UI has been resolved for each post
+  const [xDriftPicked, setXDriftPicked] = useState(false);
+  const [blogDriftPicked, setBlogDriftPicked] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const xIsEdited  = result ? xPostBody !== result.xPost.body   : false;
-  const blogIsEdited = result ? blogBody !== result.blogPost.body : false;
+  const xIsEdited    = xPostBody !== xStartBody;
+  const blogIsEdited = blogBody !== blogStartBody;
   const hasUnsavedEdits = xIsEdited || blogIsEdited;
 
   function handleFileSelect(f: File) {
@@ -425,6 +495,10 @@ export default function Home() {
     setResult(null);
     setXPostBody("");
     setBlogBody("");
+    setXStartBody("");
+    setBlogStartBody("");
+    setXDriftPicked(false);
+    setBlogDriftPicked(false);
   }
 
   function handleDrop(e: React.DragEvent<HTMLDivElement>) {
@@ -448,6 +522,8 @@ export default function Home() {
     setResult(null);
     setXPostBody("");
     setBlogBody("");
+    setXStartBody("");
+    setBlogStartBody("");
 
     setLoading("transcribing");
     let transcript: string;
@@ -488,6 +564,10 @@ export default function Home() {
       setResult(newResult);
       setXPostBody(newResult.xPost.body);
       setBlogBody(newResult.blogPost.body);
+      setXStartBody(newResult.xPost.body);
+      setBlogStartBody(newResult.blogPost.body);
+      setXDriftPicked(false);
+      setBlogDriftPicked(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed");
     } finally {
@@ -659,6 +739,13 @@ export default function Home() {
               isEdited={xIsEdited}
               copyText={xCopyText}
               isXPost
+              review={result.xPost.review}
+              driftPicked={xDriftPicked}
+              onPickVersion={(body) => {
+                setXPostBody(body);
+                setXStartBody(body);
+                setXDriftPicked(true);
+              }}
             />
 
             {/* Blog Post */}
@@ -669,6 +756,13 @@ export default function Home() {
               onBodyChange={setBlogBody}
               isEdited={blogIsEdited}
               copyText={blogCopyText}
+              review={result.blogPost.review}
+              driftPicked={blogDriftPicked}
+              onPickVersion={(body) => {
+                setBlogBody(body);
+                setBlogStartBody(body);
+                setBlogDriftPicked(true);
+              }}
             />
 
           </div>
