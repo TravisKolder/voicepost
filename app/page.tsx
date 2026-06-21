@@ -5,6 +5,7 @@ import type { ParsedOutput } from "@/lib/parse-output";
 
 type Mode = "voice-first" | "balanced" | "reach-first";
 type LoadingState = "idle" | "transcribing" | "generating";
+type RecordState = "idle" | "requesting" | "recording" | "recorded";
 
 interface CoherenceReview {
   drifted: boolean;
@@ -38,6 +39,21 @@ function formatBadge(format?: string) {
   return map[format.toUpperCase()] ?? format;
 }
 
+function formatRecTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function getBestMimeType(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  for (const t of candidates) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return "";
+}
+
 // ── Icons ──────────────────────────────────────────────────────────────────
 
 function UploadIcon() {
@@ -58,6 +74,26 @@ function AudioIcon() {
       <path d="M9 18V5l12-2v13" />
       <circle cx="6" cy="18" r="3" />
       <circle cx="18" cy="16" r="3" />
+    </svg>
+  );
+}
+
+function MicIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "w-5 h-5"} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="2" width="6" height="11" rx="3" />
+      <path d="M19 10a7 7 0 0 1-14 0" />
+      <line x1="12" y1="19" x2="12" y2="22" />
+      <line x1="8" y1="22" x2="16" y2="22" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
     </svg>
   );
 }
@@ -472,6 +508,7 @@ export default function Home() {
   const [loading, setLoading] = useState<LoadingState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateResult | null>(null);
+  const [canRecord, setCanRecord] = useState(false);
 
   // Live-editable body text for each output
   const [xPostBody, setXPostBody] = useState("");
@@ -483,14 +520,38 @@ export default function Home() {
   const [xDriftPicked, setXDriftPicked] = useState(false);
   const [blogDriftPicked, setBlogDriftPicked] = useState(false);
 
+  // Recording state machine
+  const [recState, setRecState] = useState<RecordState>("idle");
+  const [recSeconds, setRecSeconds] = useState(0);
+  const [recAudioUrl, setRecAudioUrl] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recChunksRef = useRef<Blob[]>([]);
+  const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recStreamRef = useRef<MediaStream | null>(null);
+  const recAudioUrlRef = useRef<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const xIsEdited    = xPostBody !== xStartBody;
-  const blogIsEdited = blogBody !== blogStartBody;
-  const hasUnsavedEdits = xIsEdited || blogIsEdited;
+  useEffect(() => {
+    setCanRecord(
+      typeof MediaRecorder !== "undefined" &&
+      typeof navigator !== "undefined" &&
+      navigator.mediaDevices != null,
+    );
+    return () => {
+      if (recTimerRef.current) clearInterval(recTimerRef.current);
+      recStreamRef.current?.getTracks().forEach((t) => t.stop());
+      if (recAudioUrlRef.current) URL.revokeObjectURL(recAudioUrlRef.current);
+    };
+  }, []);
 
-  function handleFileSelect(f: File) {
-    setFile(f);
+  function setRecAudioUrlSafe(url: string | null) {
+    if (recAudioUrlRef.current) URL.revokeObjectURL(recAudioUrlRef.current);
+    recAudioUrlRef.current = url;
+    setRecAudioUrl(url);
+  }
+
+  function resetForNewInput() {
     setError(null);
     setResult(null);
     setXPostBody("");
@@ -501,11 +562,121 @@ export default function Home() {
     setBlogDriftPicked(false);
   }
 
+  // clearFile = true when user explicitly discards (Re-record); false when caller sets a new file
+  function discardRecording(clearFile = true) {
+    if (recTimerRef.current) {
+      clearInterval(recTimerRef.current);
+      recTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      recChunksRef.current = []; // Prevent onstop from processing the partial data
+      try { mediaRecorderRef.current.stop(); } catch { /* ignore */ }
+    }
+    recStreamRef.current?.getTracks().forEach((t) => t.stop());
+    recStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    recChunksRef.current = [];
+    setRecState("idle");
+    setRecSeconds(0);
+    setRecAudioUrlSafe(null);
+    if (clearFile) {
+      setFile(null);
+      resetForNewInput();
+    }
+  }
+
+  function handleFileSelect(f: File) {
+    discardRecording(false); // clean up any recording without clearing file state
+    setFile(f);
+    resetForNewInput();
+  }
+
   function handleDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
     setDragging(false);
     const f = e.dataTransfer.files[0];
     if (f) handleFileSelect(f);
+  }
+
+  async function startRecording() {
+    if (recState !== "idle") return;
+    setRecState("requesting");
+    setError(null);
+    // Clear any uploaded file — we're switching to recording mode
+    setFile(null);
+    resetForNewInput();
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      setRecState("idle");
+      if (e instanceof DOMException) {
+        if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
+          setError("Microphone permission denied — allow access in your browser settings and try again.");
+        } else if (e.name === "NotFoundError") {
+          setError("No microphone found on this device.");
+        } else {
+          setError(`Microphone error: ${e.message}`);
+        }
+      } else {
+        setError("Could not access the microphone.");
+      }
+      return;
+    }
+
+    recStreamRef.current = stream;
+    const mimeType = getBestMimeType();
+
+    let mr: MediaRecorder;
+    try {
+      mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    } catch {
+      mr = new MediaRecorder(stream);
+    }
+    mediaRecorderRef.current = mr;
+    recChunksRef.current = [];
+
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) recChunksRef.current.push(e.data);
+    };
+
+    mr.onerror = () => {
+      discardRecording(true);
+      setError("Recording stopped unexpectedly. Please try again.");
+    };
+
+    mr.onstop = () => {
+      const chunks = recChunksRef.current;
+      if (chunks.length === 0) return; // recording was discarded
+
+      const actualType = chunks[0]?.type || mimeType || "audio/webm";
+      const blob = new Blob(chunks, { type: actualType });
+      const ext = actualType.includes("mp4") ? "mp4"
+        : actualType.includes("ogg") ? "ogg"
+        : "webm";
+      const recordedFile = new File([blob], `recording.${ext}`, { type: actualType });
+
+      setRecAudioUrlSafe(URL.createObjectURL(blob));
+      setRecState("recorded");
+      setFile(recordedFile);
+      // result state was already reset at startRecording; keep it clear
+      stream.getTracks().forEach((t) => t.stop());
+      recStreamRef.current = null;
+    };
+
+    mr.start(1000); // 1-second timeslices — safer on mobile Safari
+    setRecState("recording");
+    setRecSeconds(0);
+    recTimerRef.current = setInterval(() => setRecSeconds((s) => s + 1), 1000);
+  }
+
+  function stopRecording() {
+    if (recTimerRef.current) {
+      clearInterval(recTimerRef.current);
+      recTimerRef.current = null;
+    }
+    try { mediaRecorderRef.current?.stop(); } catch { /* ignore */ }
   }
 
   async function handleGenerate() {
@@ -554,7 +725,6 @@ export default function Home() {
         xPost: data.xPost,
         blogPost: data.blogPost,
       };
-      // Diagnostic — remove once blog body issue is confirmed resolved
       console.log("[voicepost] blogPost:", {
         title: newResult.blogPost.title,
         format: newResult.blogPost.format,
@@ -576,6 +746,9 @@ export default function Home() {
   }
 
   const busy = loading !== "idle";
+  const xIsEdited    = xPostBody !== xStartBody;
+  const blogIsEdited = blogBody !== blogStartBody;
+  const hasUnsavedEdits = xIsEdited || blogIsEdited;
 
   const xCopyText = xPostBody;
   const blogCopyText =
@@ -601,14 +774,14 @@ export default function Home() {
         <div
           role="button"
           tabIndex={0}
-          onDragOver={(e) => { e.preventDefault(); if (!busy) setDragging(true); }}
+          onDragOver={(e) => { e.preventDefault(); if (!busy && recState === "idle") setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={handleDrop}
-          onClick={() => !busy && fileInputRef.current?.click()}
-          onKeyDown={(e) => { if (e.key === "Enter" && !busy) fileInputRef.current?.click(); }}
+          onClick={() => !busy && recState !== "recording" && fileInputRef.current?.click()}
+          onKeyDown={(e) => { if (e.key === "Enter" && !busy && recState !== "recording") fileInputRef.current?.click(); }}
           className={[
             "rounded-xl border-2 border-dashed transition-colors select-none",
-            busy ? "opacity-60 pointer-events-none" : "cursor-pointer",
+            busy || recState === "recording" ? "opacity-60 pointer-events-none" : "cursor-pointer",
             dragging
               ? "border-gray-900 dark:border-white bg-gray-50 dark:bg-gray-900"
               : "border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-600 hover:bg-gray-50/60 dark:hover:bg-gray-900/40",
@@ -619,11 +792,11 @@ export default function Home() {
             type="file"
             accept=".m4a,.mp3,.wav,.webm,.ogg,.flac,.aac,.mp4,.opus"
             className="hidden"
-            disabled={busy}
+            disabled={busy || recState === "recording"}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); }}
           />
           <div className="flex flex-col items-center gap-2 py-8 px-4 text-center">
-            {file ? (
+            {file && recState !== "recording" && recState !== "recorded" ? (
               <>
                 <AudioIcon />
                 <p className="font-medium text-gray-800 dark:text-gray-200 text-sm">{file.name}</p>
@@ -645,6 +818,111 @@ export default function Home() {
             )}
           </div>
         </div>
+
+        {/* ── Recording section ────────────────────────────────────────── */}
+        {canRecord && (
+          <>
+            <div className="flex items-center gap-3 select-none">
+              <div className="flex-1 h-px bg-gray-200 dark:bg-gray-800" />
+              <span className="text-xs text-gray-400 dark:text-gray-500">or</span>
+              <div className="flex-1 h-px bg-gray-200 dark:bg-gray-800" />
+            </div>
+
+            <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 overflow-hidden">
+
+              {/* Idle — big tappable record button */}
+              {recState === "idle" && (
+                <button
+                  disabled={busy}
+                  onClick={startRecording}
+                  className="w-full flex items-center justify-center gap-3 py-6 px-4
+                    text-gray-600 dark:text-gray-400
+                    hover:bg-gray-50 dark:hover:bg-gray-800/50
+                    disabled:opacity-50 disabled:cursor-not-allowed
+                    transition-colors active:bg-gray-100 dark:active:bg-gray-800"
+                >
+                  <MicIcon className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+                  <span className="text-sm font-medium">Record audio</span>
+                </button>
+              )}
+
+              {/* Requesting microphone permission */}
+              {recState === "requesting" && (
+                <div className="flex items-center justify-center gap-3 py-6 px-4
+                  text-gray-500 dark:text-gray-400 text-sm">
+                  <SpinnerIcon />
+                  <span>Requesting microphone…</span>
+                </div>
+              )}
+
+              {/* Active recording */}
+              {recState === "recording" && (
+                <div className="flex items-center justify-between px-5 py-4 gap-4">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {/* Pulsing red dot */}
+                    <span className="relative flex h-3 w-3 shrink-0">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
+                    </span>
+                    <span className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                      Recording
+                    </span>
+                    <span className="text-sm font-mono tabular-nums text-gray-500 dark:text-gray-400">
+                      {formatRecTime(recSeconds)}
+                    </span>
+                  </div>
+                  <button
+                    onClick={stopRecording}
+                    className="flex items-center gap-2 shrink-0 text-sm font-medium
+                      px-4 py-2.5 rounded-lg
+                      bg-gray-900 text-white dark:bg-white dark:text-gray-900
+                      hover:bg-gray-700 dark:hover:bg-gray-200
+                      active:bg-gray-800 dark:active:bg-gray-300
+                      transition-colors"
+                  >
+                    <StopIcon />
+                    Stop
+                  </button>
+                </div>
+              )}
+
+              {/* Recording complete */}
+              {recState === "recorded" && recAudioUrl && (
+                <div className="px-5 py-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-green-500 dark:text-green-400 text-base leading-none">●</span>
+                      <span className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                        Recording ready
+                      </span>
+                      <span className="text-sm tabular-nums text-gray-400 dark:text-gray-500">
+                        {formatRecTime(recSeconds)}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => discardRecording(true)}
+                      disabled={busy}
+                      className="text-xs shrink-0 text-gray-400 dark:text-gray-500
+                        hover:text-gray-700 dark:hover:text-gray-300
+                        disabled:opacity-50 disabled:cursor-not-allowed
+                        transition-colors"
+                    >
+                      Re-record
+                    </button>
+                  </div>
+                  {/* Native audio player for playback */}
+                  <audio
+                    src={recAudioUrl}
+                    controls
+                    className="w-full h-10"
+                    style={{ colorScheme: "light dark" }}
+                  />
+                </div>
+              )}
+
+            </div>
+          </>
+        )}
 
         {/* Mode selector */}
         <div className="space-y-2">
@@ -678,10 +956,10 @@ export default function Home() {
         {/* Generate button */}
         <button
           onClick={handleGenerate}
-          disabled={!file || busy}
+          disabled={!file || busy || recState === "recording"}
           className={[
             "w-full rounded-lg px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors",
-            !file
+            !file || recState === "recording"
               ? "bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed"
               : busy
               ? "bg-gray-900 dark:bg-white text-white dark:text-gray-900 opacity-70 cursor-not-allowed"
