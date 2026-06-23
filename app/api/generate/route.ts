@@ -38,8 +38,10 @@ export async function POST(req: NextRequest) {
   const validMode = mode as Mode;
 
   try {
-    const xRaw = await callClaude(composePrompt("x", validMode), transcript);
-    const blogRaw = await callClaude(composePrompt("blog", validMode), transcript);
+    const [xRaw, blogRaw] = await Promise.all([
+      callClaude(composePrompt("x", validMode), transcript),
+      callClaude(composePrompt("blog", validMode), transcript),
+    ]);
 
     const xPost = parseOutput(xRaw);
     const blogPost = parseOutput(blogRaw);

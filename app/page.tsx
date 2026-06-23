@@ -675,23 +675,38 @@ export default function Home() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch("/api/transcribe", { method: "POST", body: form });
+      const transcribeController = new AbortController();
+      const transcribeTimeout = setTimeout(() => transcribeController.abort(), 90_000);
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        body: form,
+        signal: transcribeController.signal,
+      });
+      clearTimeout(transcribeTimeout);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Transcription failed (${res.status})`);
       transcript = data.transcript;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Transcription failed");
+      const msg =
+        e instanceof DOMException && e.name === "AbortError"
+          ? "Transcription timed out — please try again"
+          : e instanceof Error ? e.message : "Transcription failed";
+      setError(msg);
       setLoading("idle");
       return;
     }
 
     setLoading("generating");
     try {
+      const generateController = new AbortController();
+      const generateTimeout = setTimeout(() => generateController.abort(), 60_000);
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transcript, mode }),
+        signal: generateController.signal,
       });
+      clearTimeout(generateTimeout);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Generation failed (${res.status})`);
       const newResult: GenerateResult = {
@@ -713,7 +728,11 @@ export default function Home() {
       setXDriftPicked(false);
       setBlogDriftPicked(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Generation failed");
+      const msg =
+        e instanceof DOMException && e.name === "AbortError"
+          ? "Generation timed out — please try again"
+          : e instanceof Error ? e.message : "Generation failed";
+      setError(msg);
     } finally {
       setLoading("idle");
     }
