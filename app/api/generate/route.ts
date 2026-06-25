@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Request body must be a JSON object" }, { status: 400 });
   }
 
-  const { transcript, mode } = body as Record<string, unknown>;
+  const { transcript, mode, voiceSpec } = body as Record<string, unknown>;
 
   if (typeof transcript !== "string" || transcript.trim().length < MIN_TRANSCRIPT_LENGTH) {
     return NextResponse.json(
@@ -36,11 +36,12 @@ export async function POST(req: NextRequest) {
   }
 
   const validMode = mode as Mode;
+  const specOverride = typeof voiceSpec === "string" && voiceSpec.trim() ? voiceSpec : undefined;
 
   try {
     const [xRaw, blogRaw] = await Promise.all([
-      callClaude(composePrompt("x", validMode), transcript),
-      callClaude(composePrompt("blog", validMode), transcript),
+      callClaude(composePrompt("x", validMode, specOverride), transcript),
+      callClaude(composePrompt("blog", validMode, specOverride), transcript),
     ]);
 
     const xPost = parseOutput(xRaw);

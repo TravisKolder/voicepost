@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import type { ParsedOutput } from "@/lib/parse-output";
+import VoiceOnboarding, { VOICE_SPEC_KEY } from "@/components/VoiceOnboarding";
 
 const RecordingSection = dynamic(
   () => import("../components/RecordingSection"),
@@ -482,6 +483,14 @@ function PostCard({
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export default function Home() {
+  // undefined = not yet hydrated; null = no spec found; string = spec loaded
+  const [voiceSpec, setVoiceSpec] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(VOICE_SPEC_KEY);
+    setVoiceSpec(stored && stored.trim() ? stored : null);
+  }, []);
+
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [mode, setMode] = useState<Mode>("balanced");
@@ -703,7 +712,7 @@ export default function Home() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript, mode }),
+        body: JSON.stringify({ transcript, mode, voiceSpec }),
         signal: generateController.signal,
       });
       clearTimeout(generateTimeout);
@@ -736,6 +745,14 @@ export default function Home() {
     } finally {
       setLoading("idle");
     }
+  }
+
+  // Wait for localStorage hydration to avoid flicker
+  if (voiceSpec === undefined) return null;
+
+  // No voice spec — gate the user into onboarding first
+  if (voiceSpec === null) {
+    return <VoiceOnboarding onSpecCreated={(spec) => setVoiceSpec(spec)} />;
   }
 
   const busy = loading !== "idle";

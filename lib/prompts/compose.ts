@@ -26,9 +26,11 @@ const MODE_MAP: Record<Mode, string> = {
 /**
  * Assemble the full system prompt.
  * Order: voice spec (the foundation) -> format rules -> mode layer.
+ * Pass voiceSpec to use a user-generated spec instead of the default.
  */
-export function composePrompt(format: Format, mode: Mode): string {
-  const parts = [VOICE_SPEC, FORMAT_MAP[format], MODE_MAP[mode]];
+export function composePrompt(format: Format, mode: Mode, voiceSpec?: string): string {
+  const spec = voiceSpec && voiceSpec.trim() ? voiceSpec : VOICE_SPEC;
+  const parts = [spec, FORMAT_MAP[format], MODE_MAP[mode]];
   // Filter out the empty voice-first layer so we don't add stray whitespace.
   return parts.filter((p) => p.trim().length > 0).join("\n\n");
 }
