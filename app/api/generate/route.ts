@@ -36,7 +36,10 @@ export async function POST(req: NextRequest) {
   }
 
   const validMode = mode as Mode;
-  const specOverride = typeof voiceSpec === "string" && voiceSpec.trim() ? voiceSpec : undefined;
+  // In owner mode, always use the built-in VOICE_SPEC regardless of what the client sends.
+  const ownerMode = process.env.OWNER_MODE === "true";
+  const specOverride =
+    !ownerMode && typeof voiceSpec === "string" && voiceSpec.trim() ? voiceSpec : undefined;
 
   try {
     const [xRaw, blogRaw] = await Promise.all([
