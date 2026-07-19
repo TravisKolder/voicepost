@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { transcribeAudio, isSupportedAudioFile, GrokError } from "@/lib/grok";
 
+export const maxDuration = 120;
+
 const MAX_FILE_BYTES = 500 * 1024 * 1024; // 500 MB
 
 export async function POST(req: NextRequest) {

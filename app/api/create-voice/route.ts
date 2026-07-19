@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateVoiceSpec } from "@/lib/generate-voice-spec";
 import { AnthropicError } from "@/lib/anthropic";
 
+export const maxDuration = 120;
+
 export async function POST(req: NextRequest) {
   let body: unknown;
   try {

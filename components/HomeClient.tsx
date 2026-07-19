@@ -713,7 +713,7 @@ export default function HomeClient({ ownerMode }: { ownerMode: boolean }) {
     setLoading("generating");
     try {
       const generateController = new AbortController();
-      const generateTimeout = setTimeout(() => generateController.abort(), 60_000);
+      const generateTimeout = setTimeout(() => generateController.abort(), 120_000);
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

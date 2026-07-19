@@ -4,6 +4,8 @@ import { callClaude, AnthropicError } from "@/lib/anthropic";
 import { parseOutput } from "@/lib/parse-output";
 import { reviewCoherence } from "@/lib/coherence-review";
 
+export const maxDuration = 120;
+
 const VALID_MODES = new Set<Mode>(["voice-first", "balanced", "reach-first"]);
 const MIN_TRANSCRIPT_LENGTH = 50;
 

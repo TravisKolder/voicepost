@@ -86,18 +86,26 @@ export default function VoiceOnboarding({ onSpecCreated }: { onSpecCreated: (spe
     setError(null);
     setLoading(true);
     try {
+      const createVoiceController = new AbortController();
+      const createVoiceTimeout = setTimeout(() => createVoiceController.abort(), 120_000);
       const res = await fetch("/api/create-voice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ samples }),
+        signal: createVoiceController.signal,
       });
+      clearTimeout(createVoiceTimeout);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Failed (${res.status})`);
       const spec: string = data.voiceSpec;
       localStorage.setItem(VOICE_SPEC_KEY, spec);
       onSpecCreated(spec);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
+      const msg =
+        e instanceof DOMException && e.name === "AbortError"
+          ? "Voice creation timed out — please try again"
+          : e instanceof Error ? e.message : "Something went wrong";
+      setError(msg);
     } finally {
       setLoading(false);
     }
